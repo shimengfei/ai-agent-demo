@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Demo - 智能代理编排系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .main-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 20px 20px 0 0;
+            padding: 2rem;
+        }
+        
+        .task-card {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            transition: transform 0.3s ease;
+            margin-bottom: 1rem;
+        }
+        
+        .task-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .status-badge {
+            font-size: 0.8rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+        }
+        
+        .status-pending { background-color: #ffc107; color: #000; }
+        .status-analyzing { background-color: #17a2b8; color: white; }
+        .status-executing { background-color: #007bff; color: white; }
+        .status-completed { background-color: #28a745; color: white; }
+        .status-failed { background-color: #dc3545; color: white; }
+        
+        .log-container {
+            max-height: 200px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+        
+        .agent-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            margin: 0.2rem;
+            display: inline-block;
+        }
+        
+        .input-group {
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        
+        .btn-submit {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 0 15px 15px 0;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .btn-submit:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+            color: white;
+        }
+        
+        .loading-spinner {
+            display: none;
+        }
+        
+        .example-tasks {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .example-task {
+            cursor: pointer;
+            padding: 0.5rem 1rem;
+            margin: 0.5rem 0;
+            background: white;
+            border-radius: 10px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .example-task:hover {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid py-4">
+        <div class="row justify-content-center">
+            <div class="col-lg-10">
+                <div class="main-container">
+                    <!-- Header -->
+                    <div class="header text-center">
+                        <h1><i class="fas fa-robot"></i> AI Agent Demo</h1>
+                        <p class="mb-0">智能代理编排系统 - 多Agent协作任务处理</p>
+                    </div>
+                    
+                    <div class="p-4">
+                        <!-- 可用Agent展示 -->
+                        <div class="row mb-4">
+                            <div class="col-12">
+                                <h5><i class="fas fa-cogs"></i> 可用Agent</h5>
+                                <div id="agents-container">
+                                    <div class="text-center">
+                                        <div class="spinner-border text-primary" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 示例任务 -->
+                        <div class="example-tasks">
+                            <h5><i class="fas fa-lightbulb"></i> 示例任务</h5>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="example-task" onclick="submitExampleTask('请帮我计算 25 乘以 8 是多少？')">
+                                        <i class="fas fa-calculator"></i> 数学计算：25 × 8
+                                    </div>
+                                    <div class="example-task" onclick="submitExampleTask('北京今天天气怎么样？')">
+                                        <i class="fas fa-cloud-sun"></i> 天气查询：北京天气
+                                    </div>
+                                    <div class="example-task" onclick="submitExampleTask('现在几点了？')">
+                                        <i class="fas fa-clock"></i> 时间查询：当前时间
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="example-task" onclick="submitExampleTask('请将"Hello World"翻译成中文')">
+                                        <i class="fas fa-language"></i> 翻译：Hello World
+                                    </div>
+                                    <div class="example-task" onclick="submitExampleTask('创建一个名为test.txt的文件，内容为"Hello Agent"')">
+                                        <i class="fas fa-file"></i> 文件操作：创建文件
+                                    </div>
+                                    <div class="example-task" onclick="submitExampleTask('搜索关于人工智能的最新信息')">
+                                        <i class="fas fa-search"></i> 信息搜索：AI信息
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 任务提交 -->
+                        <div class="row mb-4">
+                            <div class="col-12">
+                                <h5><i class="fas fa-paper-plane"></i> 提交新任务</h5>
+                                <div class="input-group">
+                                    <input type="text" id="taskInput" class="form-control" 
+                                           placeholder="输入你的任务，例如：计算 100 的平方根、查询上海天气等...">
+                                    <button class="btn btn-submit" onclick="submitTask()">
+                                        <i class="fas fa-paper-plane"></i> 提交
+                                    </button>
+                                </div>
+                                <div class="loading-spinner text-center mt-2">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">提交中...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 任务列表 -->
+                        <div class="row">
+                            <div class="col-12">
+                                <h5><i class="fas fa-tasks"></i> 任务执行状态</h5>
+                                <div id="tasks-container">
+                                    <div class="text-center text-muted">
+                                        <i class="fas fa-inbox fa-3x mb-3"></i>
+                                        <p>暂无任务，请提交一个新任务</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- SockJS and STOMP -->
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    
+    <script>
+        let stompClient = null;
+        let tasks = new Map();
+        
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            loadAgents();
+            loadTasks();
+            connectWebSocket();
+        });
+        
+        // 加载可用Agent
+        async function loadAgents() {
+            try {
+                const response = await fetch('/api/agent/agents');
+                const agents = await response.json();
+                
+                const container = document.getElementById('agents-container');
+                container.innerHTML = '';
+                
+                Object.entries(agents).forEach(([name, description]) => {
+                    const badge = document.createElement('span');
+                    badge.className = 'agent-badge';
+                    badge.innerHTML = `<i class="fas fa-robot"></i> ${name}`;
+                    badge.title = description;
+                    container.appendChild(badge);
+                });
+            } catch (error) {
+                console.error('加载Agent失败:', error);
+            }
+        }
+        
+        // 加载任务列表
+        async function loadTasks() {
+            try {
+                const response = await fetch('/api/agent/tasks');
+                const taskList = await response.json();
+                
+                taskList.forEach(task => {
+                    tasks.set(task.taskId, task);
+                });
+                
+                updateTasksDisplay();
+            } catch (error) {
+                console.error('加载任务失败:', error);
+            }
+        }
+        
+        // 提交任务
+        async function submitTask() {
+            const input = document.getElementById('taskInput');
+            const userInput = input.value.trim();
+            
+            if (!userInput) {
+                alert('请输入任务内容');
+                return;
+            }
+            
+            showLoading(true);
+            
+            try {
+                const response = await fetch('/api/agent/task', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ userInput: userInput })
+                });
+                
+                if (response.ok) {
+                    const task = await response.json();
+                    tasks.set(task.taskId, task);
+                    updateTasksDisplay();
+                    input.value = '';
+                } else {
+                    alert('提交任务失败');
+                }
+            } catch (error) {
+                console.error('提交任务失败:', error);
+                alert('提交任务失败: ' + error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+        
+        // 提交示例任务
+        function submitExampleTask(userInput) {
+            document.getElementById('taskInput').value = userInput;
+            submitTask();
+        }
+        
+        // 显示/隐藏加载状态
+        function showLoading(show) {
+            const spinner = document.querySelector('.loading-spinner');
+            const submitBtn = document.querySelector('.btn-submit');
+            
+            if (show) {
+                spinner.style.display = 'block';
+                submitBtn.disabled = true;
+            } else {
+                spinner.style.display = 'none';
+                submitBtn.disabled = false;
+            }
+        }
+        
+        // 更新任务显示
+        function updateTasksDisplay() {
+            const container = document.getElementById('tasks-container');
+            
+            if (tasks.size === 0) {
+                container.innerHTML = `
+                    <div class="text-center text-muted">
+                        <i class="fas fa-inbox fa-3x mb-3"></i>
+                        <p>暂无任务，请提交一个新任务</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = '';
+            
+            Array.from(tasks.values())
+                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                .forEach(task => {
+                    const taskCard = createTaskCard(task);
+                    container.appendChild(taskCard);
+                });
+        }
+        
+        // 创建任务卡片
+        function createTaskCard(task) {
+            const card = document.createElement('div');
+            card.className = 'task-card p-3';
+            card.id = `task-${task.taskId}`;
+            
+            const statusClass = `status-${task.status.toLowerCase()}`;
+            const statusIcon = getStatusIcon(task.status);
+            
+            card.innerHTML = `
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <h6 class="mb-0">${task.userInput}</h6>
+                    <span class="status-badge ${statusClass}">
+                        ${statusIcon} ${task.status}
+                    </span>
+                </div>
+                <div class="text-muted small mb-2">
+                    <i class="fas fa-clock"></i> 创建时间: ${formatDateTime(task.createdAt)}
+                    ${task.updatedAt !== task.createdAt ? `<br><i class="fas fa-sync"></i> 更新时间: ${formatDateTime(task.updatedAt)}` : ''}
+                </div>
+                ${task.statusMessage ? `<div class="text-info small mb-2"><i class="fas fa-info-circle"></i> ${task.statusMessage}</div>` : ''}
+                ${task.result ? `
+                    <div class="mb-2">
+                        <strong>执行结果:</strong>
+                        <div class="bg-light p-2 rounded mt-1" style="white-space: pre-wrap;">${task.result}</div>
+                    </div>
+                ` : ''}
+                ${task.logs && task.logs.length > 0 ? `
+                    <div>
+                        <strong>执行日志:</strong>
+                        <div class="log-container mt-1">
+                            ${task.logs.map(log => `<div class="text-muted">${log}</div>`).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+            
+            return card;
+        }
+        
+        // 获取状态图标
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'PENDING': return '<i class="fas fa-clock"></i>';
+                case 'ANALYZING': return '<i class="fas fa-search"></i>';
+                case 'EXECUTING': return '<i class="fas fa-cog fa-spin"></i>';
+                case 'COMPLETED': return '<i class="fas fa-check"></i>';
+                case 'FAILED': return '<i class="fas fa-times"></i>';
+                default: return '<i class="fas fa-question"></i>';
+            }
+        }
+        
+        // 格式化日期时间
+        function formatDateTime(dateTimeStr) {
+            const date = new Date(dateTimeStr);
+            return date.toLocaleString('zh-CN');
+        }
+        
+        // 连接WebSocket
+        function connectWebSocket() {
+            const socket = new SockJS('/ws');
+            stompClient = Stomp.over(socket);
+            
+            stompClient.connect({}, function(frame) {
+                console.log('WebSocket连接成功');
+                
+                // 订阅任务更新
+                stompClient.subscribe('/topic/task-update', function(message) {
+                    const task = JSON.parse(message.body);
+                    tasks.set(task.taskId, task);
+                    updateTasksDisplay();
+                });
+                
+                // 订阅任务完成
+                stompClient.subscribe('/topic/task-completed', function(message) {
+                    const task = JSON.parse(message.body);
+                    tasks.set(task.taskId, task);
+                    updateTasksDisplay();
+                    showNotification('任务完成', `任务 "${task.userInput}" 已成功完成！`, 'success');
+                });
+                
+                // 订阅任务失败
+                stompClient.subscribe('/topic/task-failed', function(message) {
+                    const task = JSON.parse(message.body);
+                    tasks.set(task.taskId, task);
+                    updateTasksDisplay();
+                    showNotification('任务失败', `任务 "${task.userInput}" 执行失败！`, 'error');
+                });
+                
+                // 订阅系统消息
+                stompClient.subscribe('/topic/system', function(message) {
+                    const data = JSON.parse(message.body);
+                    showNotification('系统消息', data.message, 'info');
+                });
+            });
+        }
+        
+        // 显示通知
+        function showNotification(title, message, type) {
+            // 创建通知元素
+            const notification = document.createElement('div');
+            notification.className = `alert alert-${type === 'error' ? 'danger' : type === 'success' ? 'success' : 'info'} alert-dismissible fade show position-fixed`;
+            notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+            notification.innerHTML = `
+                <strong>${title}</strong><br>
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // 5秒后自动移除
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 5000);
+        }
+        
+        // 回车键提交任务
+        document.getElementById('taskInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                submitTask();
+            }
+        });
+    </script>
+</body>
+</html> 
