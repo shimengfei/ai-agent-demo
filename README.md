@@ -170,4 +170,4 @@ MIT License
 
 - [LangChain4j](https://github.com/langchain4j/langchain4j)
 - [Spring Boot](https://spring.io/projects/spring-boot)
-- [OpenAI API](https://platform.openai.com/docs) 
+- [OpenAI API](https://platform.openai.com/docs)
