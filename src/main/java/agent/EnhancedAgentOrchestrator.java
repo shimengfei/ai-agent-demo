@@ -9,10 +9,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import service.WebSocketService;
 import tools.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * 增强的 Agent 编排器
@@ -29,6 +31,7 @@ public class EnhancedAgentOrchestrator {
     private final AtomicInteger taskCounter;
     private final AgentConfig agentConfig;
     private final WebSocketService webSocketService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     
     @Autowired
     public EnhancedAgentOrchestrator(AgentConfig agentConfig, WebSocketService webSocketService) {
@@ -107,7 +110,7 @@ public class EnhancedAgentOrchestrator {
     }
     
     /**
-     * 提交复杂任务
+     * 提交复杂任务（LLM驱动的多Agent规划与执行）
      */
     public TaskExecution submitTask(String userInput) {
         String taskId = "task-" + taskCounter.incrementAndGet();
@@ -127,17 +130,16 @@ public class EnhancedAgentOrchestrator {
     }
     
     /**
-     * 执行任务
+     * LLM驱动的任务执行，按steps顺序/并行调度Agent
      */
     private void executeTask(TaskExecution task) {
         task.updateStatus("ANALYZING", "正在分析任务...");
         webSocketService.pushTaskUpdate(task);
         
-        // 分析任务类型
-        TaskAnalysis analysis = analyzeTask(task.getUserInput());
-        task.addLog("任务分析完成: " + analysis.getDescription());
+        LlmTaskPlan plan = analyzeTaskWithLLM(task.getUserInput());
+        task.addLog("任务分析完成: " + (plan.description != null ? plan.description : "LLM任务规划"));
         
-        if (analysis.getRequiredAgents().isEmpty()) {
+        if (plan.steps == null || plan.steps.isEmpty()) {
             task.updateStatus("FAILED", "无法识别任务类型");
             webSocketService.pushTaskFailed(task);
             return;
@@ -146,12 +148,13 @@ public class EnhancedAgentOrchestrator {
         task.updateStatus("EXECUTING", "正在执行任务...");
         webSocketService.pushTaskUpdate(task);
         
-        // 执行任务
         String result;
-        if (analysis.getRequiredAgents().size() == 1) {
-            result = executeSingleAgentTask(analysis.getRequiredAgents().get(0), task.getUserInput(), task);
+        if (hasComplexDependencies(plan.steps)) {
+            result = executeDagSteps(plan.steps, task);
+        } else if ("parallel".equalsIgnoreCase(plan.collaboration)) {
+            result = executeParallelSteps(plan.steps, task);
         } else {
-            result = executeMultiAgentTask(analysis, task.getUserInput(), task);
+            result = executeSequentialSteps(plan.steps, task);
         }
         
         task.setResult(result);
@@ -160,81 +163,136 @@ public class EnhancedAgentOrchestrator {
     }
     
     /**
-     * 分析任务类型和需要的 Agent
+     * 检查是否有复杂依赖关系
      */
-    private TaskAnalysis analyzeTask(String userInput) {
-        String analysisPrompt = String.format("""
-            分析以下用户输入，确定需要哪些专业Agent来处理：
-            用户输入: %s
-            
-            可用的Agent类型：
-            - calculator: 数学计算
-            - weather: 天气查询
-            - time: 时间管理
-            - search: 信息搜索
-            - translator: 语言翻译
-            - file: 文件操作
-            
-            请返回JSON格式：
-            {
-                "description": "任务描述",
-                "requiredAgents": ["agent1", "agent2"],
-                "executionOrder": ["agent1", "agent2"],
-                "collaborationType": "sequential|parallel"
-            }
-            """, userInput);
-        
-        try {
-            String response = model.chat(UserMessage.from(analysisPrompt)).aiMessage().text();
-            return parseTaskAnalysis(response, userInput);
-        } catch (Exception e) {
-            return new TaskAnalysis("任务分析失败", Arrays.asList("search"), "sequential");
-        }
-    }
-    
-    private TaskAnalysis parseTaskAnalysis(String response, String userInput) {
-        String lowerInput = userInput.toLowerCase();
-        
-        if (lowerInput.contains("计算") || lowerInput.contains("数学") || lowerInput.contains("+") || lowerInput.contains("-") || lowerInput.contains("*") || lowerInput.contains("/")) {
-            return new TaskAnalysis("数学计算任务", Arrays.asList("calculator"), "sequential");
-        } else if (lowerInput.contains("天气") || lowerInput.contains("温度") || lowerInput.contains("下雨")) {
-            return new TaskAnalysis("天气查询任务", Arrays.asList("weather"), "sequential");
-        } else if (lowerInput.contains("时间") || lowerInput.contains("几点") || lowerInput.contains("时区")) {
-            return new TaskAnalysis("时间管理任务", Arrays.asList("time"), "sequential");
-        } else if (lowerInput.contains("翻译") || lowerInput.contains("英文") || lowerInput.contains("中文")) {
-            return new TaskAnalysis("翻译任务", Arrays.asList("translator"), "sequential");
-        } else if (lowerInput.contains("文件") || lowerInput.contains("读取") || lowerInput.contains("写入") || lowerInput.contains("目录")) {
-            return new TaskAnalysis("文件操作任务", Arrays.asList("file"), "sequential");
-        } else if (lowerInput.contains("搜索") || lowerInput.contains("查询") || lowerInput.contains("信息")) {
-            return new TaskAnalysis("信息搜索任务", Arrays.asList("search"), "sequential");
-        } else {
-            // 复杂任务，可能需要多个Agent协作
-            List<String> requiredAgents = new ArrayList<>();
-            if (lowerInput.contains("计算") || lowerInput.contains("数学")) requiredAgents.add("calculator");
-            if (lowerInput.contains("天气")) requiredAgents.add("weather");
-            if (lowerInput.contains("时间")) requiredAgents.add("time");
-            if (lowerInput.contains("翻译")) requiredAgents.add("translator");
-            if (lowerInput.contains("文件")) requiredAgents.add("file");
-            if (lowerInput.contains("搜索") || requiredAgents.isEmpty()) requiredAgents.add("search");
-            
-            return new TaskAnalysis("多Agent协作任务", requiredAgents, "parallel");
-        }
+    private boolean hasComplexDependencies(List<LlmTaskStep> steps) {
+        return steps.stream().anyMatch(step -> step.depends_on != null && !step.depends_on.isEmpty());
     }
     
     /**
-     * 执行单一 Agent 任务
+     * DAG调度执行，支持复杂依赖关系
      */
-    private String executeSingleAgentTask(String agentType, String userInput, TaskExecution task) {
-        SpecializedAgent agent = agents.get(agentType);
-        if (agent == null) {
-            return "❌ 未找到合适的Agent: " + agentType;
+    private String executeDagSteps(List<LlmTaskStep> steps, TaskExecution task) {
+        Map<Integer, String> stepResults = new HashMap<>();
+        Map<Integer, LlmTaskStep> stepMap = steps.stream().collect(Collectors.toMap(s -> s.id, s -> s));
+        Set<Integer> executed = new HashSet<>();
+        StringBuilder result = new StringBuilder();
+        
+        task.addLog("开始DAG调度执行，共 " + steps.size() + " 个步骤");
+        
+        while (executed.size() < steps.size()) {
+            boolean progress = false;
+            for (LlmTaskStep step : steps) {
+                if (executed.contains(step.id)) continue;
+                
+                // 检查依赖是否满足
+                if (step.depends_on == null || step.depends_on.stream().allMatch(executed::contains)) {
+                    task.addLog(String.format("执行步骤 %d: %s (%s)", step.id, step.agent, step.action));
+                    
+                    // 填充依赖结果到参数中
+                    Map<String, Object> params = new HashMap<>(step.params != null ? step.params : new HashMap<>());
+                    for (Map.Entry<String, Object> entry : params.entrySet()) {
+                        if (entry.getValue() instanceof String) {
+                            String value = (String) entry.getValue();
+                            if (value.startsWith("step:")) {
+                                try {
+                                    int depId = Integer.parseInt(value.substring(5));
+                                    String depResult = stepResults.get(depId);
+                                    if (depResult != null) {
+                                        params.put(entry.getKey(), depResult);
+                                    }
+                                } catch (NumberFormatException e) {
+                                    // 忽略无效的step引用
+                                }
+                            }
+                        }
+                    }
+                    
+                    String stepResult = executeAgentStep(step, params, task);
+                    stepResults.put(step.id, stepResult);
+                    result.append(String.format("【步骤%d - %s】\n%s\n\n", step.id, step.agent, stepResult));
+                    executed.add(step.id);
+                    progress = true;
+                }
+            }
+            
+            if (!progress) {
+                task.addLog("❌ 检测到循环依赖，无法继续执行");
+                return "❌ 检测到循环依赖，无法继续执行";
+            }
         }
         
-        task.addLog("调用 " + agent.getName() + " Agent");
+        task.addLog("🎉 DAG调度执行完成");
+        return result.toString();
+    }
+    
+    /**
+     * 顺序执行steps，支持上一步结果依赖
+     */
+    private String executeSequentialSteps(List<LlmTaskStep> steps, TaskExecution task) {
+        StringBuilder result = new StringBuilder();
+        String prevResult = null;
+        for (int i = 0; i < steps.size(); i++) {
+            LlmTaskStep step = steps.get(i);
+            Map<String, Object> params = new HashMap<>(step.params != null ? step.params : new HashMap<>());
+            
+            // 处理"上一步结果"依赖
+            for (Map.Entry<String, Object> entry : params.entrySet()) {
+                if (entry.getValue() instanceof String) {
+                    String value = (String) entry.getValue();
+                    if (value.contains("上一步结果") && prevResult != null) {
+                        params.put(entry.getKey(), value.replace("上一步结果", prevResult));
+                    }
+                }
+            }
+            
+            task.addLog(String.format("顺序执行第%d步: %s (%s)", i + 1, step.agent, step.action));
+            String stepResult = executeAgentStep(step, params, task);
+            result.append(String.format("【%s】\n%s\n\n", step.agent, stepResult));
+            prevResult = stepResult;
+        }
+        return result.toString();
+    }
+    
+    /**
+     * 并行执行steps
+     */
+    private String executeParallelSteps(List<LlmTaskStep> steps, TaskExecution task) {
+        List<CompletableFuture<String>> futures = new ArrayList<>();
+        for (int i = 0; i < steps.size(); i++) {
+            LlmTaskStep step = steps.get(i);
+            CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+                Map<String, Object> params = new HashMap<>(step.params != null ? step.params : new HashMap<>());
+                task.addLog(String.format("并行执行: %s (%s)", step.agent, step.action));
+                return executeAgentStep(step, params, task);
+            }, executorService);
+            futures.add(future);
+        }
+        StringBuilder result = new StringBuilder();
         try {
-            String result = agent.execute(userInput);
-            task.addLog("Agent执行完成");
-            return result;
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get(30, TimeUnit.SECONDS);
+            for (int i = 0; i < steps.size(); i++) {
+                result.append(String.format("【%s】\n%s\n\n", steps.get(i).agent, futures.get(i).get()));
+            }
+        } catch (Exception e) {
+            task.addLog("并行执行失败: " + e.getMessage());
+            return "❌ 并行执行失败: " + e.getMessage();
+        }
+        return result.toString();
+    }
+    
+    /**
+     * 按step action/参数调用Agent（支持多方法）
+     */
+    private String executeAgentStep(LlmTaskStep step, Map<String, Object> params, TaskExecution task) {
+        SpecializedAgent agent = agents.get(step.agent);
+        if (agent == null) {
+            task.addLog("❌ 未找到合适的Agent: " + step.agent);
+            return "❌ 未找到合适的Agent: " + step.agent;
+        }
+        try {
+            // 支持多方法调用
+            return agent.execute(step.action, params);
         } catch (Exception e) {
             task.addLog("Agent执行失败: " + e.getMessage());
             return "❌ Agent执行失败: " + e.getMessage();
@@ -242,75 +300,58 @@ public class EnhancedAgentOrchestrator {
     }
     
     /**
-     * 执行多 Agent 协作任务
+     * LLM结构化意图解析，返回完整plan（支持复杂参数和依赖）
      */
-    private String executeMultiAgentTask(TaskAnalysis analysis, String userInput, TaskExecution task) {
-        task.addLog("启动多Agent协作模式");
-        
-        if ("parallel".equals(analysis.getCollaborationType())) {
-            return executeParallelTask(analysis, userInput, task);
-        } else {
-            return executeSequentialTask(analysis, userInput, task);
-        }
-    }
-    
-    /**
-     * 并行执行任务
-     */
-    private String executeParallelTask(TaskAnalysis analysis, String userInput, TaskExecution task) {
-        List<CompletableFuture<String>> futures = new ArrayList<>();
-        
-        for (String agentType : analysis.getRequiredAgents()) {
-            CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
-                task.addLog("并行执行 " + agentType + " Agent");
-                return executeSingleAgentTask(agentType, userInput, task);
-            }, executorService);
-            futures.add(future);
-        }
-        
-        // 等待所有任务完成
-        CompletableFuture<Void> allFutures = CompletableFuture.allOf(
-            futures.toArray(new CompletableFuture[0])
-        );
-        
-        try {
-            allFutures.get(30, TimeUnit.SECONDS); // 30秒超时
+    private LlmTaskPlan analyzeTaskWithLLM(String userInput) {
+        String prompt = String.format("""
+            分析用户输入，输出JSON格式的任务规划。用户输入: %s
             
-            StringBuilder result = new StringBuilder();
-            result.append("🤝 多Agent并行协作结果:\n\n");
+            Agent类型: calculator(数学), weather(天气), time(时间), search(搜索), translator(翻译), file(文件)
             
-            for (int i = 0; i < analysis.getRequiredAgents().size(); i++) {
-                String agentType = analysis.getRequiredAgents().get(i);
-                String agentResult = futures.get(i).get();
-                result.append(String.format("【%s】\n%s\n\n", agentType, agentResult));
+            输出格式示例:
+            {
+              "description": "任务描述",
+              "steps": [
+                {"id": 1, "agent": "calculator", "action": "calculate", "params": {"expression": "25*8"}},
+                {"id": 2, "agent": "translator", "action": "translate", "params": {"text": "step:1", "target_language": "英文"}, "depends_on": [1]}
+              ],
+              "collaboration": "sequential"
             }
             
-            return result.toString();
+            只输出JSON，不要其他内容。
+            """, userInput);
+        try {
+            String response = model.chat(UserMessage.from(prompt)).aiMessage().text();
+            // 尝试提取JSON部分
+            String jsonStr = extractJsonFromResponse(response);
+            return objectMapper.readValue(jsonStr, LlmTaskPlan.class);
         } catch (Exception e) {
-            task.addLog("并行执行失败: " + e.getMessage());
-            return "❌ 并行执行失败: " + e.getMessage();
+            // fallback: 兜底为search
+            LlmTaskPlan fallback = new LlmTaskPlan();
+            fallback.description = "任务分析失败";
+            LlmTaskStep step = new LlmTaskStep();
+            step.id = 1;
+            step.agent = "search";
+            step.action = "search";
+            step.params = new HashMap<>();
+            step.params.put("query", userInput);
+            fallback.steps = List.of(step);
+            fallback.collaboration = "sequential";
+            return fallback;
         }
     }
     
     /**
-     * 顺序执行任务
+     * 从LLM响应中提取JSON字符串
      */
-    private String executeSequentialTask(TaskAnalysis analysis, String userInput, TaskExecution task) {
-        StringBuilder result = new StringBuilder();
-        result.append("🔄 多Agent顺序协作结果:\n\n");
-        
-        String currentInput = userInput;
-        
-        for (String agentType : analysis.getRequiredAgents()) {
-            task.addLog("顺序执行 " + agentType + " Agent");
-            String agentResult = executeSingleAgentTask(agentType, currentInput, task);
-            result.append(String.format("【%s】\n%s\n\n", agentType, agentResult));
-            
-            // 将当前结果作为下一个Agent的输入
-            currentInput = agentResult;
+    private String extractJsonFromResponse(String response) {
+        // 查找第一个 { 和最后一个 }
+        int start = response.indexOf('{');
+        int end = response.lastIndexOf('}');
+        if (start >= 0 && end >= 0 && end > start) {
+            return response.substring(start, end + 1);
         }
-        
-        return result.toString();
+        return response;
     }
     
     /**
@@ -370,6 +411,21 @@ public class EnhancedAgentOrchestrator {
         String chat(String userInput);
     }
     
+    // LLM结构化输出的任务规划对象（升级版）
+    private static class LlmTaskPlan {
+        public String description;
+        public List<LlmTaskStep> steps;
+        public String collaboration;
+    }
+    
+    private static class LlmTaskStep {
+        public int id;
+        public String agent;
+        public String action;
+        public Map<String, Object> params; // 支持任意参数
+        public List<Integer> depends_on; // 支持依赖关系
+    }
+    
     // 内部类
     private static class TaskAnalysis {
         private final String description;
@@ -401,11 +457,33 @@ public class EnhancedAgentOrchestrator {
         public String getName() { return name; }
         public String getDescription() { return description; }
         
-        public String execute(String input) throws Exception {
-            // 通过反射调用chat方法
-            return (String) agentInstance.getClass()
-                .getMethod("chat", String.class)
-                .invoke(agentInstance, input);
+        public String execute(String action, Map<String, Object> params) throws Exception {
+            try {
+                // 尝试调用带action和params的方法
+                return (String) agentInstance.getClass()
+                    .getMethod("chat", String.class, Map.class)
+                    .invoke(agentInstance, action, params);
+            } catch (NoSuchMethodException e) {
+                // 如果方法不存在，fallback到原来的chat(String)方法
+                // 将params转换为字符串输入
+                String input = buildInputFromParams(action, params);
+                return (String) agentInstance.getClass()
+                    .getMethod("chat", String.class)
+                    .invoke(agentInstance, input);
+            }
+        }
+        
+        private String buildInputFromParams(String action, Map<String, Object> params) {
+            if (params == null || params.isEmpty()) {
+                return action;
+            }
+            
+            StringBuilder input = new StringBuilder();
+            input.append("Action: ").append(action).append("\n");
+            for (Map.Entry<String, Object> entry : params.entrySet()) {
+                input.append(entry.getKey()).append(": ").append(entry.getValue()).append("\n");
+            }
+            return input.toString();
         }
     }
 } 

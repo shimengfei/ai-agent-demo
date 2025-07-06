@@ -71,4 +71,7 @@ logs/
 
 # Temporary files
 *.tmp
-*.temp 
+*.temp
+
+# Workspace files (runtime generated)
+workspace/ 
